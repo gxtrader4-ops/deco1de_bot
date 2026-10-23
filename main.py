@@ -1,11 +1,12 @@
 import os
 import json
+import re
 import requests
 from flask import Flask, request
 import telebot
 from telebot.types import ReplyKeyboardMarkup, KeyboardButton
 
-# নতুন কনফিগারেশন ও টোকেন
+# কনফিগারেশন ও নতুন টোকেন
 BOT_TOKEN = "8457189144:AAE7TmIXDqzcGxoLPKo4w6pA_Sj2NUJm3gs"
 ADMIN_ID = 8419760844
 ADMIN_USERNAME = "NIROB_GX_LEADER"
@@ -29,13 +30,40 @@ def save_db(data):
     with open(DB_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-# মূল কিবোর্ড লেআউট
-def get_main_keyboard():
+# ইউজার রোল অনুযায়ী গতিশীল কিবোর্ড লেআউট
+def get_main_keyboard(user_id):
     markup = ReplyKeyboardMarkup(resize_keyboard=True)
-    markup.row(KeyboardButton("📊 Admin Stats"), KeyboardButton("🛠️ Admin Help"))
+    # শুধুমাত্র অ্যাডমিন হলে অ্যাডমিন অপশন দেখাবে
+    if user_id == ADMIN_ID:
+        markup.row(KeyboardButton("📊 Admin Stats"), KeyboardButton("🛠️ Admin Help"))
+    
     markup.row(KeyboardButton("🔓 Obfuscate HTML"), KeyboardButton("🔗 Link to Real HTML"))
     markup.row(KeyboardButton("📄 HTML to Real HTML"))
     return markup
+
+# ফাইল বা টেক্সট থেকে আসল এইচটিএমএল এক্সট্র্যাক্ট করার লজিক
+def extract_pure_html(raw_content):
+    if not raw_content:
+        return ""
+
+    # ১. স্ক্রিপ্ট ট্যাগ ও ক্ষতিকারক কোড রিমুভ (অপ্রয়োজনীয় অবফাসকেটেড স্ক্রিপ্ট ডিলিট)
+    clean_code = re.sub(r'<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>', '', raw_content, flags=re.IGNORECASE)
+    
+    # ২. টাইটেল বা কোডের ভেতরের অনাকাঙ্ক্ষিত নন-এএসসিআইআই বা ভাঙা ক্যারেক্টার ফিল্টার
+    def clean_title(match):
+        title_text = match.group(1)
+        cleaned_text = re.sub(r'[^\x00-\x7F]+', '', title_text).strip()
+        if not cleaned_text:
+            cleaned_text = "Cleaned HTML Source"
+        return f"<title>{cleaned_text}</title>"
+    
+    clean_code = re.sub(r'<title>(.*?)</title>', clean_title, clean_code, flags=re.IGNORECASE | re.DOTALL)
+
+    # ৩. ডকটাইপ এবং এইচটিএমএল স্ট্রাকচার নিশ্চিত করা
+    if not re.search(r'<!DOCTYPE\s+html', clean_code, re.IGNORECASE):
+        clean_code = f"<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n    <meta charset=\"UTF-8\">\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n    <title>Cleaned Real HTML</title>\n</head>\n<body>\n{clean_code}\n</body>\n</html>"
+
+    return clean_code.strip()
 
 # /start কমান্ড হ্যান্ডলার
 @bot.message_handler(commands=['start'])
@@ -54,12 +82,12 @@ def send_welcome(message):
     welcome_msg = (
         f"👋 স্বাগতম GX HTML Decoder বোটে!\n\n"
         f"ডেভেলপার: @{ADMIN_USERNAME}\n"
-        f"আপনার সিকিউরড বা অবফাসকেটেড HTML ফাইল বা লিংক ক্লিন করে রিয়েল কোড পেতে নিচের অপশনগুলো ব্যবহার করুন।"
+        f"আপনার সিকিউরড বা এনক্রিপ্টেড HTML ফাইল বা লিংক থেকে ১০০% আসল ও ক্লিন কোড বের করতে ফাইল বা লিংক পাঠাতেন।"
     )
     
-    bot.send_message(message.chat.id, welcome_msg, reply_markup=get_main_keyboard())
+    bot.send_message(message.chat.id, welcome_msg, reply_markup=get_main_keyboard(user_id))
 
-# টেক্সট, বাটন ক্লিক এবং ডকুমেন্ট হ্যান্ডলার
+# বার্তা এবং ফাইল প্রসেসিং হ্যান্ডলার
 @bot.message_handler(func=lambda message: True, content_types=['text', 'document'])
 def handle_incoming_message(message):
     user_id = message.from_user.id
@@ -71,17 +99,14 @@ def handle_incoming_message(message):
     if message.text:
         text = message.text.strip()
         
-        # বাটন অপশন চেক
-        if text == "📊 Admin Stats":
-            if user_id == ADMIN_ID:
-                total_users = len(db["users"])
-                total_banned = len(db["banned"])
-                bot.reply_to(message, f"📊 **Bot Statistics:**\n\n👤 Total Users: {total_users}\n🚫 Banned Users: {total_banned}")
-            else:
-                bot.reply_to(message, "❌ এই কমান্ডটি শুধু অ্যাডমিনের জন্য।")
+        # অ্যাডমিন কমান্ড ও অ্যাকশন
+        if text == "📊 Admin Stats" and user_id == ADMIN_ID:
+            total_users = len(db["users"])
+            total_banned = len(db["banned"])
+            bot.reply_to(message, f"📊 **Bot Statistics:**\n\n👤 Total Users: {total_users}\n🚫 Banned Users: {total_banned}")
             return
             
-        elif text == "🛠️ Admin Help":
+        elif text == "🛠️ Admin Help" and user_id == ADMIN_ID:
             help_text = (
                 "🛠️ **Admin Commands Help:**\n\n"
                 "/ban [user_id] - ইউজার ব্যান করতে\n"
@@ -91,10 +116,9 @@ def handle_incoming_message(message):
             return
             
         elif text in ["🔓 Obfuscate HTML", "🔗 Link to Real HTML", "📄 HTML to Real HTML"]:
-            bot.reply_to(message, "📥 অনুগ্রহ করে আপনার সিকিউরড বা অবফাসকেটেড HTML ফাইলটি ডকুমেন্ট (Document) হিসেবে পাঠান অথবা ডিরেক্ট কোড/লিংক পেস্ট করুন।")
+            bot.reply_to(message, "📥 অনুগ্রহ করে আপনার সিকিউরড ফাইলটি ডকুমেন্ট হিসেবে পাঠান অথবা সরাসরি লিংক/কোড পেস্ট করুন।")
             return
 
-        # ব্যান এবং আনব্যান কমান্ড চেক
         if text.startswith('/ban ') and user_id == ADMIN_ID:
             try:
                 b_id = int(text.replace('/ban ', '').strip())
@@ -105,6 +129,7 @@ def handle_incoming_message(message):
             except ValueError:
                 bot.reply_to(message, "❌ সঠিক ইউজার আইডি দিন।")
             return
+            
         elif text.startswith('/unban ') and user_id == ADMIN_ID:
             try:
                 u_id = int(text.replace('/unban ', '').strip())
@@ -116,10 +141,10 @@ def handle_incoming_message(message):
                 bot.reply_to(message, "❌ সঠিক ইউজার আইডি দিন।")
             return
 
-    html_content = ""
-    file_name = "clean_decoded.html"
+    raw_html = ""
+    file_name = "real_clean_source.html"
 
-    # যদি ফাইল আপলোড করা হয়
+    # ১. ডকুমেন্ট আপলোড হলে
     if message.document:
         doc = message.document
         if not doc.file_name.endswith(('.html', '.htm', '.txt')):
@@ -129,62 +154,51 @@ def handle_incoming_message(message):
         file_name = f"real_clean_{doc.file_name}"
         file_info = bot.get_file(doc.file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        html_content = downloaded_file.decode('utf-8', errors='ignore')
+        raw_html = downloaded_file.decode('utf-8', errors='ignore')
 
+    # ২. ডিরেক্ট লিংক বা কোড পেস্ট করলে
     elif message.text:
         text = message.text.strip()
-        # যদি লিংক দেওয়া হয়, তবে রিকোয়েস্ট পাঠিয়ে পেজের সোর্স কোড ফেচ করবে
         if text.startswith("http://") or text.startswith("https://"):
-            bot.reply_to(message, "⏳ লিংক থেকে রিয়েল সোর্স কোড ফেচ করা হচ্ছে...")
+            bot.reply_to(message, "⏳ লিংক থেকে অরিজিনাল পেজের রিয়েল সোর্স কোড সংগ্রহ করা হচ্ছে...")
             try:
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 }
                 response = requests.get(text, headers=headers, timeout=15)
                 if response.status_code == 200:
-                    html_content = response.text
-                    file_name = "real_clean_live_source.html"
+                    raw_html = response.text
+                    file_name = "real_live_source.html"
                 else:
-                    bot.reply_to(message, f"❌ সার্ভার থেকে রেসপন্স পাওয়া যায়নি। Status Code: {response.status_code}")
+                    bot.reply_to(message, f"❌ লিংক কাজ করছে না! Status Code: {response.status_code}")
                     return
             except Exception as e:
                 bot.reply_to(message, f"❌ লিংক ফেচ করতে সমস্যা হয়েছে: {str(e)}")
                 return
         else:
-            html_content = text
+            raw_html = text
 
-    if html_content:
-        bot.reply_to(message, "⏳ ডয়েচটাইপ থেকে শুরু করে ডিপ কন্টেইনার পর্যন্ত ক্লিন কোড এক্সট্র্যাক্ট করা হচ্ছে...")
+    # আসল এবং ক্লিন এইচটিএমএল আউটপুট তৈরি
+    if raw_html:
+        bot.reply_to(message, "⏳ সমস্ত অনাকাঙ্ক্ষিত কোড ফিল্টার করে আসল HTML ফাইল এক্সট্র্যাক্ট করা হচ্ছে...")
 
-        if "<html" not in html_content.lower():
-            cleaned_html = f"""<!DOCTYPE html>
-<html lang="bn">
-<head>
-    <meta charset="UTF-8">
-    <title>GX Cleaned & Un-obfuscated Output</title>
-</head>
-<body>
-{html_content}
-</body>
-</html>"""
-        else:
-            cleaned_html = html_content
+        final_html = extract_pure_html(raw_html)
 
         output_path = f"/tmp/{file_name}"
         with open(output_path, "w", encoding="utf-8") as f:
-            f.write(cleaned_html)
+            f.write(final_html)
 
         with open(output_path, "rb") as f:
             bot.send_document(
                 message.chat.id,
                 f,
-                caption=f"✅ সফলভাবে সিকিউরিটি কোড ভেঙে ক্লিন HTML ফাইল তৈরি করা হয়েছে!\nDeveloper: @{ADMIN_USERNAME}"
+                caption=f"✅ সফলভাবে সিকিউরিটি রিমুভ করে অরিজিনাল ক্লিন HTML দেওয়া হলো!\nDeveloper: @{ADMIN_USERNAME}"
             )
         
         if os.path.exists(output_path):
             os.remove(output_path)
 
-# ফ্লাস্ক ওয়েবহুক রুট এবং অটো-ওয়েবহুক সেটআপ
+# ফ্লাস্ক ওয়েবহুক এবং অটো-কানেক্ট
 @app.route(f"/{BOT_TOKEN}", methods=["POST"])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
@@ -196,13 +210,12 @@ def webhook():
 
 @app.route("/")
 def index():
-    # রেন্ডারে লাইভ হওয়ার সাথে সাথে অটো ওয়েবহুক সেট হয়ে যাবে
     render_url = os.environ.get("RENDER_EXTERNAL_URL")
     if render_url:
         webhook_url = f"{render_url}/{BOT_TOKEN}"
         bot.remove_webhook()
         bot.set_webhook(url=webhook_url)
-    return f"Nirob GX Decoder Bot is running 24/7! Owner: @{ADMIN_USERNAME}"
+    return f"Nirob GX Decoder Bot active! Owner: @{ADMIN_USERNAME}"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
